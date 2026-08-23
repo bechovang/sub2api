@@ -748,11 +748,9 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 		if err := s.checkSubscriptionEligibility(ctx, user.ID, group, subscription); err != nil {
 			return err
 		}
-	} else {
-		if err := s.checkBalanceEligibility(ctx, user.ID); err != nil {
-			return err
-		}
 	}
+	// 余额模式已随支付流程移除：非订阅请求不再检查用户余额（users.balance）。
+	// API Key 配额即钱包：auth 阶段拦截 quota_exhausted，请求后 UpdateQuotaUsed 扣减。
 
 	// user × platform quota 仅在 standard（余额）模式生效；订阅模式豁免
 	if !isSubscriptionMode {
@@ -873,27 +871,6 @@ func (s *BillingCacheService) balanceBelowEligibilityThreshold(balance float64) 
 	}
 	minimumReserve := s.minimumBalanceReserve()
 	return minimumReserve > 0 && balance < minimumReserve
-}
-
-// checkBalanceEligibility 检查余额模式资格
-func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userID int64) error {
-	balance, err := s.GetUserBalance(ctx, userID)
-	if err != nil {
-		if s.circuitBreaker != nil {
-			s.circuitBreaker.OnFailure(err)
-		}
-		logger.LegacyPrintf("service.billing_cache", "ALERT: billing balance check failed for user %d: %v", userID, err)
-		return ErrBillingServiceUnavailable.WithCause(err)
-	}
-	if s.circuitBreaker != nil {
-		s.circuitBreaker.OnSuccess()
-	}
-
-	if s.balanceBelowEligibilityThreshold(balance) {
-		return ErrInsufficientBalance
-	}
-
-	return nil
 }
 
 // checkSubscriptionEligibility 检查订阅模式资格

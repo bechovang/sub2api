@@ -41,15 +41,18 @@ func (s *balanceEligibilityCacheStub) InvalidateUserBalance(context.Context, int
 	return nil
 }
 
-func TestCheckBillingEligibility_RejectsBalanceBelowMinimumReserve(t *testing.T) {
-	cache := &balanceEligibilityCacheStub{balance: 0.005}
+// Balance-mode eligibility was removed together with the payment flow: the API
+// key quota is the wallet for non-subscription users, so a zero user balance
+// must no longer block the request.
+func TestCheckBillingEligibility_BalanceModeIsNotGated(t *testing.T) {
+	cache := &balanceEligibilityCacheStub{balance: 0}
 	cfg := &config.Config{}
 	cfg.Billing.MinimumBalanceReserve = 0.01
 	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(svc.Stop)
 
 	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil, "")
-	require.ErrorIs(t, err, ErrInsufficientBalance)
+	require.NoError(t, err)
 }
 
 func TestCheckBillingEligibility_AllowsBalanceAtMinimumReserve(t *testing.T) {
@@ -68,10 +71,9 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesExhaustedBalance(t *testing.T
 		balance:                  0.50,
 		cacheMissAfterInvalidate: true,
 	}
-	userRepo := &balanceLoadUserRepoStub{balance: -0.25}
 	cfg := &config.Config{}
 	cfg.Billing.MinimumBalanceReserve = 0.01
-	svc := NewBillingCacheService(cache, userRepo, nil, nil, nil, nil, cfg, nil)
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(svc.Stop)
 
 	newBalance := -0.25
@@ -86,9 +88,9 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesExhaustedBalance(t *testing.T
 	require.Equal(t, int64(1), cache.invalidateCalls.Load())
 	require.Equal(t, int64(0), cache.deductCalls.Load())
 
+	// Balance no longer gates eligibility.
 	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil, "")
-	require.ErrorIs(t, err, ErrInsufficientBalance)
-	require.Equal(t, int64(1), userRepo.calls.Load())
+	require.NoError(t, err)
 }
 
 func TestSyncBalanceCacheAfterDeduction_InvalidatesWhenBalanceFallsBelowReserve(t *testing.T) {
