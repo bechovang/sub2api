@@ -292,3 +292,58 @@ Chưa dùng thẳng trong Claude Code (cần convert Anthropic→OpenAI nếu mu
 ### Lưu ý
 - Key dùng chung với Claude Code nếu đổi key phải đồng bộ `.claude/settings.json`.
 - Muốn lên production phải replay (group 6 + account 11 + channel 3 + api key).
+
+---
+
+## §8 — Command Code `/alpha/generate` bridge (Task 2 — COMPLETED)
+
+**Goal**: bán Command Code "Go plan" qua sub2api dù `/provider/v1` trả `403 upgrade_required`.
+
+**Phát hiện chính (de-risk)**:
+- Provider API Go-plan → `403 upgrade_required` (đã biết). **Nhưng CLI protocol `POST
+  /alpha/generate` chạy được với key Go-plan** — bridge dùng cái này.
+- Nó nhận header tuỳ chỉnh + body bọc `{config, memory, taste, skills, params{model,
+  messages(CC-format), tools, system, max_tokens, temperature, stream}, threadId(UUID)}`
+  + `config.environment` là **string** (`win32-x64, Node.js v22.0.0`) + `threadId` UUID hợp lệ.
+- SSE events: `start`, `reasoning-start/delta/end`, `text-start/delta/end`,
+  `tool-call`, `finish-step{usage}`, `finish{totalUsage}`, `error`.
+- **Go-plan chỉ mở model OSS**. Claude (Pro+), Gemini (GOAT), Grok/MiniMax/Fugu/Muse1.1
+  (`MODEL_NOT_IN_PLAN`/not recognized) → **KHÔNG bypass được**. Model OK: toàn bộ
+  DeepSeek-V4, Qwen 3.6/3.7/3.8, GLM-5.3/5.2/5, Kimi-K3/K2.7, MiniMax-M3, mimo,
+  Step, Tencent hy3, Nemotron 3 Ultra, Inkling, laguna-s-2.1-free, ox-alpha.
+
+**Giải pháp**: bridge độc lập `cc_bridge/` (Go, không sửa core sub2api → giữ fork
+parity). Nói **OpenAI Chat Completions** ↔ `/alpha/generate`. Key thật chỉ nằm trong
+env bridge (`COMMANDCODE_API_KEY`), không vào DB sub2api. sub2api chỉ cần account
+`openai/apikey` trỏ tới bridge.
+
+**Đã build & verify (127.0.0.1, bridge :8788)**:
+- `main.go` + `go.mod` + `README.md` + `setup_cmdcode.py` + `map_catalog.py`.
+- Non-stream: OK (kèm `reasoning_content`), usage thật (prompt ~7750, total 7783).
+- Stream: reasoning/content/tool-call chunks + `[DONE]`.
+- Tool round-trip (assistant tool_calls → tool result): OK (`content='4'`).
+
+**Đã wired vào sub2api (live gateway 127.0.0.1:8080)**:
+| Đối tượng | id | Chi tiết |
+|---|---|---|
+| Group | 7 | `Command Code OSS`, openai, rate_multiplier 1 |
+| Account | 12 | `Command Code OSS (bridge)`, openai/apikey, `base_url http://127.0.0.1:8788/v1`, group [7] |
+| Channel | 4 | `Command Code OSS Pricing`, `channel_mapped`, `restrict_models`, group [7], 12 model |
+| API key test | 21 | user `khach1`, group 7, quota 0.5, key `sk-2bfa…` |
+
+**Đã verify e2e**: Qwen3.8-Max, deepseek-v4-pro, GLM-5.3, Kimi-K3 → 200; restrict
+`gpt-4o` → 503; billing key 21 `quota_used 0.01093218` sau vài call.
+
+**⚠️ Cảnh báo billing**: Command Code chèn ~7750 token system+tools/request →
+`prompt_tokens` upstream phồng lên ~8k/call. Go plan là phí thuê bao tháng (flat),
+margin thật ≠ per-token. Nên set giá bán theo token nhưng cân đối — end-user sẽ thấy
+usage lớn hơn hội thoại thực tế.
+
+**Giá bán (USD/1M in/out, 12 model channel 4)**: Kimi-K3/K2.7-Code
+0.8/3.2 · MiniMax-M3 0.8/3.2 · GLM-5.3 0.6/2.4 · mimo-v2.5 0.5/2 · tencent-hy3
+0.6/2.4 · nemotron-3-ultra 0.8/3.2 · inkling 0.8/3.2 · laguna-free & ox-alpha
+0.1/0.4 · Qwen3.8-Max & deepseek-v4-pro 0.6/2.4.
+
+**Chạy bridge khi tắt shell lại**: build + `COMMANDCODE_API_KEY=... ./cc-bridge.exe`
+
+**Commit/push**: sau bước này.
