@@ -395,3 +395,4 @@ key 17 (OpenRouter, G2) · key 19 (Qwen TP, G5, quota $1) · key 20 (GLM, G6, qu
 - Command Code + GLM đều **không mở được Claude/GPT/Gemini/Grok** (cần Pro/GOAT/Provider plan — không bypass).
 - Command Code usage bị phồng ~7.7k system token/req → cân đối giá.
 - G7 & C4 chỉ chạy khi `cc_bridge` (:8788) còn sống và key trong env.
+- Quy trình thêm từng nguồn (OpenRouter/Antigravity/Qwen/GLM/Command Code) chi tiết: **`docs/ADD_SOURCES_GUIDE.md`**.
