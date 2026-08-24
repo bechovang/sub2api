@@ -257,3 +257,38 @@ Chưa dùng thẳng trong Claude Code (cần convert Anthropic→OpenAI nếu mu
 - Key gốc nằm **server-side** trong credential account 10; **không commit key ra git**.
 - Giá hiện chỉ là **giá bán** (reseller); upstream API cost $0. Muốn lên production phải **replay**
   (group 5 + account 10 openai/apikey + channel 2 + api key).
+
+---
+
+## 8. Phiên: Thêm gói GLM Z.ai (Anthropic-compatible) vào sub2api
+
+### Nguồn phát hiện
+`~/.claude/settings.json` chạy Claude Code bằng **GLM qua Z.ai Anthropic endpoint**:
+- `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic`, `ANTHROPIC_AUTH_TOKEN=0c87710c…`
+  (key KHÁC key `dd95…` mà user từng đưa — cái đó thiếu balance 429 `1113`).
+- Model default `glm-5.2` (Anthropic serve `glm-5.3`), haiku/sonnet = `glm-4.5-air`/`glm-4.6`.
+
+**Verify:** `/api/anthropic/v1/messages` → 200 OK cho `glm-5.3/5.2/4.7/4.6/4.5-air` (một số bị alias:
+`glm-5.2`→`5.3`, `glm-4.5-air`→`4.7`). Còn OpenAI-compat `/paas/v4` của cùng key vẫn `1113 no balance`
+→ Z.ai **provision riêng tier Anthropic** (đúng cái Claude Code dùng).
+
+### Đã tạo (instance local 127.0.0.1:8080)
+| Loại | ID | Mô tả |
+|------|----|-------|
+| Group | 6 | `GLM Z.ai` — platform `anthropic` |
+| Account | 11 | `GLM Z.ai (bechovang)` — anthropic/apikey, `base_url=https://api.z.ai/api/anthropic`, key=`0c87710c…`, gắn group 6 |
+| Channel | 3 | `GLM Z.ai Pricing` — `channel_mapped`, `restrict_models`, group [6], 5 model |
+| API key test | 20 | user `khach1`, group 6, quota 0.5, key `sk-4d89…` |
+
+### Định giá bán (USD/1M)
+`glm-4.5-air` 0.4/1.2 · `glm-4.6` 1.0/3.0 · `glm-4.7` 1.2/3.6 · `glm-5.2` 1.4/4.4 · `glm-5.3` 1.4/4.4.
+(Lưu DB theo USD/token = giá/1e6.) ⚠️ cần đối chiếu giá nạp Z.ai để chắc margin.
+
+### Kiểm thử
+- `POST /v1/messages` (Anthropic shape) `glm-5.2`(→serve 5.3), `glm-4.6` → **200 "OK"**.
+- **Restrict:** `claude-3-5-sonnet` → **503** "channel pricing restriction".
+- **Billing:** set `quota=0.5` cho key 20 → `quota_used 0.0003392` sau 2 call.
+
+### Lưu ý
+- Key dùng chung với Claude Code nếu đổi key phải đồng bộ `.claude/settings.json`.
+- Muốn lên production phải replay (group 6 + account 11 + channel 3 + api key).
