@@ -132,6 +132,7 @@ deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/SESSION_LOG_2026-08-24.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
@@ -146,3 +147,6 @@ output/
 
 # Vitest / Vite cache at repo root
 .vite/
+
+# local load-test artifacts (API keys)
+.loadtest/
