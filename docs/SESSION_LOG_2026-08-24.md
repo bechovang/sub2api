@@ -347,3 +347,51 @@ usage lớn hơn hội thoại thực tế.
 **Chạy bridge khi tắt shell lại**: build + `COMMANDCODE_API_KEY=... ./cc-bridge.exe`
 
 **Commit/push**: sau bước này.
+
+---
+
+## §9 — Tổng hợp toàn bộ nguồn cung token (snapshot 2026-08-24)
+
+Snapshot đầy đủ các account/upstream + group + channel + giá bán đang chạy trên gateway live `127.0.0.1:8080` (bảng tổng kết).
+
+### Practitioner: bảng nguồn cung (upstream accounts)
+| Account | Platform | Type | Nguồn / credential | Group |
+|---|---|---|---|---|
+| 4 | antigravity | oauth | `hanngoziratech` Pro sub (cclog OAuth) | 4 |
+| 5 | antigravity | oauth | `phuchcm2006@gmail.com` Pro sub | 4 |
+| 6 | antigravity | oauth | `bechovang@gmail.com` Pro sub | 4 |
+| 9 | openai | apikey | OpenRouter `https://openrouter.ai/api/v1` (còn balance ~$5.46) | 2 |
+| 10 | openai | apikey | DashScope token-plan `.../token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`, env `$BAILIAN_TOKEN_PLAN_API_KEY` | 5 |
+| 11 | anthropic | apikey | Z.ai `https://api.z.ai/api/anthropic`, key `0c87710c…` (Anthropic-compat tier riêng) | 6 |
+| 12 | openai | apikey | **cc_bridge** `http://127.0.0.1:8788/v1` → Command Code `/alpha/generate` (Go plan) | 7 |
+
+### Groups
+G1 default(anthropic) · G2 Token Le(openai) · G3 Gemini(gemini) · G4 Antigravity(antigravity) · G5 Qwen Token Plan(openai) · G6 GLM Z.ai(anthropic) · G7 Command Code OSS(openai). Tất cả rate_multiplier=1.
+
+### Channels + catalog + giá bán (USD/1M in/out)
+- **C1 OpenRouter Free** (G2, channel_mapped, restrict, model_pricing 1 nhóm): `stealth/ox-alpha`, `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free` → **0.20 / 0.20**
+- **C2 Qwen Token Plan** (G5, channel_mapped, restrict, 7 model):
+  qwen3.6-flash 0.2/0.8 · deepseek-v4-flash-0731 0.2/0.8 · qwen3.7-plus 0.5/2 · glm-5.2 0.5/2 · qwen3.7-max 0.6/2.4 · deepseek-v4-pro 0.6/2.4 · qwen3.8-max 0.8/3.2
+- **C3 GLM Z.ai** (G6, channel_mapped, restrict, 5 model):
+  glm-4.5-air 0.4/1.2 · glm-4.6 1.0/3.0 · glm-4.7 1.2/3.6 · glm-5.2 1.4/4.4 · glm-5.3 1.4/4.4
+- **C4 Command Code OSS** (G7, channel_mapped, restrict, 12 model):
+  Kimi-K3 0.8/3.2 · Kimi-K2.7-Code 0.8/3.2 · MiniMax-M3 0.8/3.2 · GLM-5.3 0.6/2.4 · mimo-v2.5 0.5/2 · tencent-hy3 0.6/2.4 · nemotron-3-ultra-550b-a55b 0.8/3.2 · inkling 0.8/3.2 · laguna-s-2.1-free 0.1/0.4 · ox-alpha 0.1/0.4 · Qwen3.8-Max 0.6/2.4 · deepseek-v4-pro 0.6/2.4
+  (base_url account 12 trỏ bridge; key thật nằm env `COMMANDCODE_API_KEY` trên bridge, không vào DB.)
+
+### Chi phí thật & margin
+| Nguồn | Chi phí | Margin bán |
+|---|---|---|
+| OpenRouter Free | $0 (model free) | ~100% |
+| Qwen token-plan | vốn theo token-plan | >0 (cần so giá vốn) |
+| GLM Z.ai | ⚠️ cần đối chiếu giá nạp Z.ai Anthropic tier | ? |
+| Command Code OSS | phí thuê bao Go-plan / tháng (flat) | 100% tới khi hết sub |
+| Antigravity | 3 sub Pro OAuth theo tháng | 100% tới khi hết sub |
+
+### API keys test đang có (user khach1, id=2)
+key 17 (OpenRouter, G2) · key 19 (Qwen TP, G5, quota $1) · key 20 (GLM, G6, quota $0.5) · key 21 (Command Code, G7, quota $0.5).
+
+### Gap
+- **Claude** chỉ có qua Antigravity (G4); **GPT / Gemini / Grok chưa có nguồn bán được.**
+- Command Code + GLM đều **không mở được Claude/GPT/Gemini/Grok** (cần Pro/GOAT/Provider plan — không bypass).
+- Command Code usage bị phồng ~7.7k system token/req → cân đối giá.
+- G7 & C4 chỉ chạy khi `cc_bridge` (:8788) còn sống và key trong env.
