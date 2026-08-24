@@ -199,3 +199,61 @@ Chưa dùng thẳng trong Claude Code (cần convert Anthropic→OpenAI nếu mu
   che `api_key`. **Không commit key gốc vào git**. File temp chứa secret đã xoá.
 - Đây là cấu hình **DB trên instance local** → muốn lên production phải **replay** các bước
   (tạo account/type apikey + channel + api key) trên backend chính thức.
+---
+
+## 7. Phiên: Thêm gói Qwen/DashScope **token-plan** (qwen + deepseek-v4 + glm-5.2)
+
+> Đầu phiên server `backend/bin/server` **bị tắt** (port 8080 trống). Restart lại với env đủ:
+> `DATA_DIR=<backend>/data`, `GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily`, và source `data/local-dev.env`.
+> ⚠️ **Bẫy:** `setsid nohup` KHÔNG kế thừa env trong môi trường MSYS → server khởi chạy dưới dạng
+> **setup bootstrap** (`/setup/status` trả `needs_setup:true`). Phải dùng **`nohup ... &` thường** để env tới process.
+
+### Mục tiêu
+- Thêm upstream **Qwen token-plan** (OpenAI-compatible `base_url`) bán gói coding-agent có lãi:
+  Qwen + DeepSeek-V4 + **GLM**. Upstream **cost = $0** (subscription) ⇒ toàn bộ lãi.
+- Đây là nguồn **GLM thực tế dùng được** (Z.ai key riêng của user thiếu balance 429 `1113`).
+
+### Muốn bán Command Code / Z.ai? (2 nguồn khác trong phiên)
+- **Command Code** (58 model premium: claude-opus-5, gpt-5.6, grok...) — account `bechovang` đang ở
+  gói **Go = KHÔNG có Provider API access**: cả `/chat/completions` lẫn `/messages` đều **403
+  `upgrade_required`** (model list `/models` đọc được nhưng không gọi được). Muốn bán phải
+  **nâng plan `Go → Provider`** tại `https://commandcode.ai/billing`. Lưu ý protocol:
+  - Model **Claude** → `POST /provider/v1/messages` (Anthropic shape).
+  - Model **OpenAI/OSS** (qwen, deepseek, gpt, gemini, grok, glm, kimi...) → `/chat/completions`.
+  ⇒ Cần **2 account** phân 2 platform (openai + anthropic) để bán đủ catalog.
+- **Z.ai (GLM)** key `dd95…` — **xác thực được** (`/models` trả glm-4.5→glm-5.3) nhưng **no balance**
+  → gọi `glm-5.2` trả **`1113 Insufficient balance`** (429). Muốn dùng phải **nạp tiền** Z.ai.
+
+### Đã tạo (instance local 127.0.0.1:8080)
+| Loại | ID | Mô tả |
+|------|----|-------|
+| Account | 10 | `Qwen Token Plan (bechovang)` — openai/apikey, `base_url=https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`, key = env `$BAILIAN_TOKEN_PLAN_API_KEY`, gắn group 5 |
+| Group | 5 | `Qwen Token Plan` — platform `openai` |
+| Channel | 2 | `Qwen Token Plan Pricing` — `channel_mapped`, `restrict_models=true`, group [5], giá theo token 7 model |
+| API key test | 19 | user `khach1` (id 2), gắn group 5, quota 1, key `sk-5a6d…` |
+
+### Định giá bán (USD/1M, upstream $0 → lãi 100%)
+| Model | in | out |
+|-------|----|----|
+| `qwen3.6-flash` | 0.2 | 0.8 |
+| `deepseek-v4-flash-0731` | 0.2 | 0.8 |
+| `qwen3.7-plus` | 0.5 | 2.0 |
+| `glm-5.2` | 0.5 | 2.0 |
+| `qwen3.7-max` | 0.6 | 2.4 |
+| `deepseek-v4-pro` | 0.6 | 2.4 |
+| `qwen3.8-max` | 0.8 | 3.2 |
+
+(Lưu trong DB theo **USD/token**, nên nhập `giá/1e6`.)
+
+### Kiểm thử end-to-end (key sub2api khách)
+- `POST /v1/chat/completions` `qwen3.7-plus`, `qwen3.8-max`, `glm-5.2`, `deepseek-v4-pro` → **200 "OK"**
+  (kèm `reasoning_content` cho model reasoning).
+- **Restrict:** `gpt-4o`, `qwen2.5-coder-32b-instruct` → **503 `Service temporarily unavailable`**.
+- **Billing:** set `quota=1` cho key 19, gọi 1 lượt `glm-5.2`/`qwen3.7-plus` → `quota_used 0.007259`.
+
+### Lưu ý
+- Nguồn `$BAILIAN_TOKEN_PLAN_API_KEY` là **apiKey trong `~/.pi/agent/models.json`** (model bí danh
+  `qwen-token-plan`); apiKey trong `~/.pi/config.json` đã **cũ → 401** ("No API-key provided").
+- Key gốc nằm **server-side** trong credential account 10; **không commit key ra git**.
+- Giá hiện chỉ là **giá bán** (reseller); upstream API cost $0. Muốn lên production phải **replay**
+  (group 5 + account 10 openai/apikey + channel 2 + api key).

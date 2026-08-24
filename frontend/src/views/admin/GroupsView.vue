@@ -4191,7 +4191,7 @@
                 type="text"
                 class="input"
                 required
-                placeholder="openrouter/gpt-5"
+                placeholder="claude-sonnet-4"
               />
             </div>
 
@@ -4300,7 +4300,7 @@
                 v-model.trim="compositePreviewModel"
                 type="text"
                 class="input"
-                placeholder="openrouter/gpt-5"
+                placeholder="claude-sonnet-4"
                 @keyup.enter="previewCompositeRoute"
               />
               <div class="flex gap-2">
