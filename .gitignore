@@ -133,6 +133,7 @@ deploy/docker-compose.override.yml
 vite.config.js
 docs/*
 !docs/SESSION_LOG_2026-08-24.md
+!docs/SESSION_LOG_2026-08-27.md
 !docs/PAYMENT.md
 !docs/ADD_SOURCES_GUIDE.md
 !docs/API_REFERENCE_VI.md

@@ -214,6 +214,16 @@ GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily
 - **Mất biến này sau khi restart backend** → gateway quay về **prod** → account consumer quay lại
   `429` "Resource has been exhausted". **Phải ghi vào script/`.env` khởi động để auto-matic.**
 - Chỉ ảnh hưởng nhánh forward của Antigravity; các platform khác (openai/gemini/...) không đổi.
+- Vòng retry chỉ dùng **đúng 1 URL** đã resolve (`availableURLs := []string{baseURL}` trong
+  `antigravity_gateway_retry.go`) — **không tự fallback** prod → daily khi gặp 429. Admin
+  "Test connection" (platform `antigravity`) đi qua cùng retry loop nên **cũng respect env này**.
+- **Dấu hiệu nhận biết regression này** (đã tái diễn 2026-08-24 §2.4 và 2026-08-27, xem
+  [`SESSION_LOG_2026-08-27.md`](SESSION_LOG_2026-08-27.md)):
+  - **Tất cả** account Antigravity cùng lúc `429 RESOURCE_EXHAUSTED` **trống thông tin**
+    (không `RetryInfo`/`quotaId`), kể cả request đầu tiên trong ngày;
+  - Token OAuth vẫn refresh bình thường (Google không thu hồi gì);
+  - Log forward ghi `base_url=https://cloudcode-pa.googleapis.com` (prod).
+  → Kiểm tra env của process trước khi nghi account/quota.
 
 ---
 
