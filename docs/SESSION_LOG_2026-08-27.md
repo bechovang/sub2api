@@ -136,10 +136,24 @@ không bao giờ phụ thuộc việc "nhớ gõ env tay"; cân nhắc patch `re
 
 | Việc | Trạng thái |
 |------|-----------|
-| Restart server kèm env `daily` | ⏳ Chờ thực hiện (phiên này mới chẩn đoán) |
-| Verify account 13, 15 qua `validation_url` (runbook §4.1) | ⏳ Cần mở browser đăng nhập đúng 2 email đó |
-| Test end-to-end qua gateway group 4 sau restart | ⏳ |
+| Restart server kèm env `daily` | ✅ **Đã làm** (12:0x, PID mới 30608, log `data/logs/server-stdout.log`) |
+| Test lại 6 account sau restart | ✅ Acc 4/5/6/14 `success:true` (gemini + claude); acc 13/15 vẫn lỗi (xem §5.1) |
+| Test end-to-end qua gateway group 4 | ✅ `POST /v1/chat/completions` (user key nhóm 4) → `200`, trả lời "OK", usage 267 token |
+| Verify account 13, 15 qua `validation_url` (runbook §4.1) | ⏳ **Cần verify tay trên browser** — đã tạo URL mới |
+| Cơ chế cảnh báo khi lỗi tương tự | ⏳ Thảo luận (xem §6) |
 | Patch auto-fallback prod→daily trên 429 trống | 💡 Đề xuất, chưa triển khai |
+
+### 5.1 Account 13 / 15 — xác nhận phải verify tay
+- Đã thử `POST /accounts/:id/refresh` (force refresh token thành công, Google vẫn cấp
+  token mới) → retest **vẫn 403 VALIDATION_REQUIRED** với `validation_url` mới.
+  → Không có đường tự động; Google bắt buộc sign-in browser cho từng account.
+- Trên daily, 2 acc này trả **401 UNAUTHENTICATED** (token bị từ chối vì account chưa
+  verify) — khác với 4 acc còn lại.
+- Cả 2 cùng map project default `aicode-consumers` (chưa onboard project riêng).
+  Sau khi verify cần kiểm tra lại `project_id` (runbook §5).
+- Quy trình verify: mở `validation_url` → đăng nhập **đúng email của account đó** →
+  bấm tiếp tục → trang "now authorized" → retest + `POST /accounts/:id/clear-error`.
+  (URL `plt` là one-time, hết hạn nhanh — lấy URL mới bằng cách retest account trước khi mở.)
 
 ---
 
@@ -157,3 +171,32 @@ không bao giờ phụ thuộc việc "nhớ gõ env tay"; cân nhắc patch `re
 > Nhận xét: 2 account chờ verify (13, 15) cùng map project default `aicode-consumers`
 > (chưa onboard project riêng) — có thể liên quan việc Google bắt verify. Sau khi verify
 > nên kiểm tra lại `project_id` có được onboard sang project riêng không (runbook §5).
+
+---
+
+## 7. Cơ chế cảnh báo khi gặp lỗi tương tự (thảo luận 2026-08-27)
+
+**Signature cần phát hiện:** gateway group Antigravity lỗi hàng loạt trong khi token
+OAuth vẫn refresh tốt — do mất env `daily` khi restart, Google chặn prod, hoặc account
+bị 403 verify. Cả 3 trường hợp đều thể hiện qua **canary request fail**.
+
+**Có sẵn trong hệ:**
+- `ScheduledTestRunnerService` — chạy test định kỳ per account, **tự recover** account
+  khi test lại OK (`scheduled_test_runner_service.go`). Chưa cấu hình plan nào.
+- Ops Alert Rules/Events (`ops_alerts.go`) — rule + event + silence, gửi được **email**.
+- Channel Monitor v2 — monitor định kỳ + history, **không có** kênh notify ngoài.
+- `notification_email_service.go` — email-only; **SMTP chưa cấu hình**
+  (log sáng 27/8: `[SubscriptionExpiry] SMTP is not configured`).
+
+**Phương án đề xuất:**
+1. **Watchdog ngoài (nhanh, không phụ thuộc SMTP):** script PowerShell chạy bằng
+   Task Scheduler mỗi 5–10 phút — gửi 1 canary request qua gateway group Antigravity;
+   fail → đẩy thông báo Telegram bot / Discord webhook. Phát hiện được mọi biến thể
+   (429 prod, 401/403 verify, server chết).
+2. **Dùng trong hệ:** cấu hình SMTP (Settings) + tạo Scheduled Test Plan cho các acc
+   Antigravity (15–30 phút/lần) + ops alert rule. Ưu điểm tự recover account; nhược
+   phụ thuộc SMTP và chỉ báo qua email.
+3. **Lâu dài (patch code):** auto-fallback prod→daily trong retry loop khi 429 trống
+   RetryInfo; đưa env vào service manager (NSSM) + khởi động từ `.env` để hết nhớ tay.
+
+Khuyến nghị: làm (1) ngay + (3) theo lộ trình; (2) nếu đã có SMTP sẵn.
