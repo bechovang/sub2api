@@ -123,6 +123,63 @@ agy.exe (PID 16092, phiên agent/terminal khác)
 | Test lại 6 acc | ✅ 4/6 `success:true` (gemini-2.5-flash); 13/15 vẫn 401 |
 | Map model `gemini-3.6-flash`/`claude-sonnet-4-5` sang model khả dụng trên daily | ⏳ Chưa làm — cần quyết định mapping |
 | Verify account 13/15 qua `validation_url` | ⏳ Cần làm tay trên browser (runbook §4.1) |
-| Watchdog `agy.exe` — cơ chế restart không kèm env | ⚠️ Đã cắt nhánh server; nếu phiên đó còn cơ chế khác (Task Scheduler/loop) có thể tái diễn. Đề xuất: đưa env vào script khởi động chính thức hoặc tắt watchdog |
+| Watchdog `agy.exe` — cơ chế restart không kèm env | ⚠️ Đã cắt nhánh server; nếu phiên đó còn cơ chế khác (Task Scheduler/loop) có thể tái diễn → đã khử rủi ro bằng patch auto-fallback (dưới) |
 | Qwen Token Plan (acc 10) "Model not found" | ⏳ Kiểm tra token/hạn dùng upstream |
 | Command Code bridge chết | ⏳ Start `cc_bridge/cc-bridge.exe` nếu cần nguồn này |
+
+---
+
+## 7. Patch code — 3 cải tiến lấy cảm hứng từ anti-api (cùng ngày)
+
+Đối chiếu cơ chế Antigravity của [`anti-api`](../anti-api) (Bun/TS proxy) với sub2api
+(Go gateway), chọn 3 điểm đáng học và triển khai:
+
+### 7.1 Auto-fallback prod → daily (giải quyết tận gốc lỗi mất env tái diễn)
+- **File:** `backend/internal/service/antigravity_gateway_retry.go`
+- **Trước:** `resolveAntigravityForwardBaseURL()` trả 1 URL; retry loop cố định
+  `availableURLs := []string{baseURL}` — mất env khi restart = 429 hàng loạt.
+- **Sau:** `resolveAntigravityForwardBaseURLs()` (không set env) trả **`[prod, daily]`**;
+  retry loop **tự fallback** prod → daily khi prod 429 URL-level
+  (`Resource has been exhausted` không `RetryInfo`) hoặc connection error.
+  Env `GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL` giờ chỉ để ép dùng đúng 1 endpoint.
+- **An toàn:** prod vẫn ưu tiên → token enterprise (prod 200) không bao giờ chạm daily
+  (không tái diễn #3611/#2962 — bài học đảo thứ tự mặc định từng phá account).
+- **Test:** `TestAntigravityRetryLoop_Prod429_FallsBackToDaily`,
+  `TestAntigravityRetryLoop_ExplicitDaily_NoProdFallback`,
+  `TestResolveAntigravityForwardBaseURLs_*` (file
+  `antigravity_fallback_selfheal_test.go` + sửa `antigravity_rate_limit_test.go`).
+
+### 7.2 404 self-heal — refresh project_id + retry cùng account
+- **File:** `antigravity_gateway_retry.go` (nhánh 404), `antigravity_token_provider.go`
+  (`RefreshProjectID`), `antigravity_gateway_service.go` (interface
+  `antigravityProjectRefresher`).
+- **Trước:** 404 ("Requested entity was not found") → failover account khác dù project chỉ
+  cần refresh (anti-api: `refreshProjectFrom404`).
+- **Sau:** 404 body có `projects/<id>` (resourceName) → `RefreshProjectID` (LoadCodeAssist)
+  → rewrap body → retry cùng account (1 lần/request). 404 **không** có project resource
+  (model không tồn tại — ví dụ `gemini-3.6-flash` trên daily) → không refresh, failover
+  như cũ (không đụng nhầm).
+- **Test:** `TestAntigravityRetryLoop_404_ProjectRefresh_RetryInPlace`,
+  `TestAntigravityRetryLoop_404_NoProjectResource_NoRefresh`,
+  `TestExtractAntigravity404ProjectName`, `TestRewrapAntigravityProject`.
+
+### 7.3 429 mơ hồ RESOURCE_EXHAUSTED → cooldown ngắn 30s
+- **File:** `antigravity_gateway_retry.go` (`isAmbiguousAntigravityResourceExhausted`,
+  nhánh 429 trong `handleUpstreamError`).
+- **Trước:** 429 không parse được reset time → theo
+  `antigravity_fallback_cooldown_minutes` (có thể cấu hình dài cả chục phút) → khóa oan
+  account consumer.
+- **Sau:** `RESOURCE_EXHAUSTED` không RetryInfo/quota keyword → model rate limit **30s**
+  cố định.
+- **Test:** `TestIsAmbiguousAntigravityResourceExhausted`,
+  `TestAntigravityDefaultRateLimitDuration_AmbiguousUses30s`.
+
+### Verify
+- `go build ./...` ✅; `go vet ./internal/service/` ✅
+- `go test ./internal/service/ -count=1` ✅ full suite (exit 0)
+- `go test ./... -count=1 -p 1` ✅ trừ 2 test không liên quan
+  (`TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig`,
+  `TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits`) — chạy
+  riêng đều PASS (`go test -run`), fail chỉ khi cả repo chạy song song = flaky/contamination,
+  không phải do patch này.
+- `make build` ✅ → `bin/server`

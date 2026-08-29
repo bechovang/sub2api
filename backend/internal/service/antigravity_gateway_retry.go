@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -46,28 +47,38 @@ type antigravityRetryLoopResult struct {
 	resp *http.Response
 }
 
-// resolveAntigravityForwardBaseURL 解析转发用 base URL。
+// resolveAntigravityForwardBaseURLs 解析转发用 base URL 列表（按优先级排序）。
 //
-// 默认使用生产端点 cloudcode-pa.googleapis.com（antigravity.BaseURLs 的首个地址，
-// 与账号 OAuth 登录/测试连接所用的 antigravity.BaseURL 一致）。
+// 默认返回 [prod, daily]：prod 在前，daily 是 fallback。当 prod 返回 URL 级
+// 429（"Resource has been exhausted" 无 RetryInfo — Google 对 consumer 账号
+// 的生产端点封锁特征，见 SESSION_LOG_2026-08-24/27/29）或连接错误时，
+// retry loop 自动切换到 daily，不再依赖人工设置 env。
 //
-// 历史上这里改用 ForwardBaseURLs()（把 daily/sandbox 排到首位）并默认取首个地址，
-// 导致网关把带生产 OAuth token 的请求发到 daily-cloudcode-pa.sandbox.googleapis.com，
-// 上游拒绝 → 账号被 401「Invalid bearer token」/502 打入临时不可调度且无法恢复
-// （见 #3611 / #2962）。后台「测试连接」用的是生产端点，所以「测试成功但网关 401」。
+// 设置 GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily（或 sandbox）则只返回 daily，
+// 保持历史行为（显式选择单一端点）。
 //
-// daily/sandbox 端点仅供内部联调，需显式设置
-// GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily（或 sandbox）才启用。
-func resolveAntigravityForwardBaseURL() string {
+// 注意：不把 daily 放在首位 — 历史上曾把 daily 排首位导致带生产 OAuth token 的
+// 请求被 daily 拒绝、账号 401 打入不可调度（#3611/#2962）。prod 优先 + fallback
+// 既保住企业 token 路径（prod 200 → 永不触达 daily），又救活 consumer 账号
+// （prod 429 → daily 200）。
+func resolveAntigravityForwardBaseURLs() []string {
 	baseURLs := antigravity.BaseURLs
 	if len(baseURLs) == 0 {
-		return ""
+		return nil
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(antigravityForwardBaseURLEnv)))
-	if (mode == "daily" || mode == "sandbox") && len(baseURLs) > 1 {
-		return baseURLs[1]
+	switch mode {
+	case "daily", "sandbox":
+		if len(baseURLs) > 1 {
+			return []string{baseURLs[1]}
+		}
+		return []string{baseURLs[0]}
+	default:
+		if len(baseURLs) > 1 {
+			return []string{baseURLs[0], baseURLs[1]}
+		}
+		return []string{baseURLs[0]}
 	}
-	return baseURLs[0]
 }
 
 // smartRetryAction 智能重试的处理结果
@@ -488,11 +499,13 @@ func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopP
 		}
 	}
 
-	baseURL := resolveAntigravityForwardBaseURL()
-	if baseURL == "" {
+	availableURLs := resolveAntigravityForwardBaseURLs()
+	if len(availableURLs) == 0 {
 		return nil, errors.New("no antigravity forward base url configured")
 	}
-	availableURLs := []string{baseURL}
+
+	// 404 self-heal：每个请求最多刷新一次 project_id（防止上游反复 404 时猛打 LoadCodeAssist）
+	project404Refreshed := false
 
 	var resp *http.Response
 	var usedBaseURL string
@@ -638,6 +651,32 @@ urlFallbackLoop:
 					break urlFallbackLoop
 				}
 
+				// 404 self-heal：project_id 过期/被迁移 → 重新拉取 project 后原地重试。
+				// 与 anti-api 的 refreshProjectFrom404 对齐：404 里带 projects/<id> 的
+				// resourceName 说明是 project 配置问题而非模型问题；刷新 project 后
+				// 重试原请求，避免直接 failover 或 cooldown 一个其实可用的账号。
+				if resp.StatusCode == http.StatusNotFound && !project404Refreshed && s.projectRefresher != nil && extractAntigravity404ProjectName(respBody) != "" {
+					project404Refreshed = true
+					if newProjectID, refreshErr := s.projectRefresher.RefreshProjectID(p.ctx, p.account); refreshErr == nil && newProjectID != "" {
+						if rewrapped, wrapErr := s.rewrapAntigravityProject(p.body, newProjectID); wrapErr == nil && len(rewrapped) > 0 {
+							p.body = rewrapped
+							logger.LegacyPrintf("service.antigravity_gateway", "%s status=404 project_refreshed account=%d project=%s (retry in place)",
+								p.prefix, p.account.ID, newProjectID)
+							continue
+						}
+					} else if refreshErr != nil {
+						logger.LegacyPrintf("service.antigravity_gateway", "%s status=404 project_refresh_failed account=%d error=%v",
+							p.prefix, p.account.ID, refreshErr)
+					}
+					// refresh 失败或无法重 wrap：继续按普通 404 处理
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break urlFallbackLoop
+				}
+
 				// 其他可重试错误（500/502/504/529，不包括 429 和 503）
 				if shouldRetryAntigravityError(resp.StatusCode) {
 					if attempt < antigravityMaxRetries {
@@ -706,6 +745,63 @@ func shouldRetryAntigravityError(statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+// antigravity404ProjectResourceRegex 匹配 404 body 中的 project resource name。
+// Google 错误负载形如 "resourceName":"projects/<id>/locations/..." 或
+// "projects/<id>"，取第一个 projects/<name> 段。
+var antigravity404ProjectResourceRegex = regexp.MustCompile(`projects/([A-Za-z0-9][A-Za-z0-9\-_.]*)`)
+
+// extractAntigravity404ProjectName 从 404 body 提取 project id（self-heal 用）。
+// 返回空串表示这不是 project 配置类 404（例如模型不存在 404 NOT_FOUND —— 那种
+// 情况 refresh project 无意义，交给正常 failover/错误透传处理）。
+func extractAntigravity404ProjectName(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	m := antigravity404ProjectResourceRegex.FindSubmatch(body)
+	if len(m) < 2 {
+		return ""
+	}
+	return string(m[1])
+}
+
+// rewrapAntigravityProject 在已 wrap 的 v1internal body 中替换 project 字段。
+// p.body 是 wrapV1InternalRequest 的输出（{"project":..., "request":...}），
+// refresh 得到新 project 后重新写回原 body 保持其余字段（request/action）不变。
+func (s *AntigravityGatewayService) rewrapAntigravityProject(wrappedBody []byte, projectID string) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(wrappedBody, &payload); err != nil {
+		return nil, err
+	}
+	payload["project"] = projectID
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// isAmbiguousAntigravityResourceExhausted 判断 429 body 是否是"模糊的 RESOURCE_EXHAUSTED"：
+// 状态是 RESOURCE_EXHAUSTED 但既没有 RetryInfo/quotaResetDelay 也没有明确的 quota
+// 关键词（quota_exhausted / quota exhausted）。这种响应常见于生产端点统一封锁
+// consumer 账号（SESSION_LOG_2026-08-24/27/29），锁长没有任何依据 —— 用 30s 短限流，
+// 避免把账号锁死几十分钟。
+func isAmbiguousAntigravityResourceExhausted(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, googleRPCStatusResourceExhausted) && !strings.Contains(bodyStr, "Resource has been exhausted") {
+		return false
+	}
+	if classifyAntigravity429(body) == antigravity429QuotaExhausted {
+		return false
+	}
+	if parseAntigravitySmartRetryInfo(body) != nil {
+		return false
+	}
+	return true
 }
 
 // isURLLevelRateLimit 判断是否为 URL 级别的限流（应切换 URL 重试）
@@ -1215,6 +1311,12 @@ func (s *AntigravityGatewayService) handleUpstreamError(
 
 		resetAt := ParseGeminiRateLimitResetTime(body)
 		defaultDur := s.getDefaultRateLimitDuration()
+		// 模糊 RESOURCE_EXHAUSTED（无 RetryInfo/quotaId/关键词，例如生产端点对
+		// consumer 账号的统一 429）→ 用 30s 短限流而非配置的长 fallback cooldown，
+		// 避免把可用账号锁死数十分钟（与 anti-api 的 ambiguous→rate_limit 处理一致）。
+		if resetAt == nil && isAmbiguousAntigravityResourceExhausted(body) {
+			defaultDur = antigravityDefaultRateLimitDuration
+		}
 
 		// 尝试解析模型 key 并设置模型级限流
 		//

@@ -177,6 +177,40 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 	return accessToken, nil
 }
 
+// RefreshProjectID 强制从上游重新拉取 project_id（404 self-heal）。
+//
+// 当网关转发收到 404 "Requested entity was not found"（错误 details 含
+// projects/<id> resourceName）时，project_id 可能过期/被迁移。此方法重新调用
+// FillProjectID（LoadCodeAssist）拿最新 project_id 并持久化，成功后由调用方
+// 用新 project retry 原请求。
+func (p *AntigravityTokenProvider) RefreshProjectID(ctx context.Context, account *Account) (string, error) {
+	if account == nil || p.antigravityOAuthService == nil {
+		return "", errors.New("antigravity project refresh unavailable")
+	}
+	accessToken := strings.TrimSpace(account.GetCredential("access_token"))
+	if accessToken == "" {
+		return "", errors.New("access_token not found")
+	}
+	newProjectID, err := p.antigravityOAuthService.FillProjectID(ctx, account, accessToken)
+	if err != nil {
+		return "", err
+	}
+	newProjectID = strings.TrimSpace(newProjectID)
+	if newProjectID == "" {
+		return "", errors.New("upstream returned empty project_id")
+	}
+	if newProjectID != account.GetCredential("project_id") {
+		account.Credentials["project_id"] = newProjectID
+		if updateErr := persistAccountCredentials(ctx, p.accountRepo, account, account.Credentials); updateErr != nil {
+			slog.Warn("antigravity_project_refresh_persist_failed",
+				"account_id", account.ID,
+				"error", updateErr,
+			)
+		}
+	}
+	return newProjectID, nil
+}
+
 // shouldAttemptBackfill checks backfill cooldown.
 func (p *AntigravityTokenProvider) shouldAttemptBackfill(accountID int64) bool {
 	if v, ok := p.backfillCooldown.Load(accountID); ok {

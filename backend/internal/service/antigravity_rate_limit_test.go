@@ -1009,7 +1009,7 @@ func TestIsAntigravityAccountSwitchError(t *testing.T) {
 	}
 }
 
-func TestResolveAntigravityForwardBaseURL_DefaultDaily(t *testing.T) {
+func TestResolveAntigravityForwardBaseURLs_DefaultHasProdThenDaily(t *testing.T) {
 	t.Setenv(antigravityForwardBaseURLEnv, "")
 
 	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
@@ -1019,10 +1019,40 @@ func TestResolveAntigravityForwardBaseURL_DefaultDaily(t *testing.T) {
 
 	prodURL := "https://prod.test"
 	dailyURL := "https://daily.test"
-	antigravity.BaseURLs = []string{dailyURL, prodURL}
+	antigravity.BaseURLs = []string{prodURL, dailyURL}
 
-	resolved := resolveAntigravityForwardBaseURL()
-	require.Equal(t, dailyURL, resolved)
+	resolved := resolveAntigravityForwardBaseURLs()
+	require.Equal(t, []string{prodURL, dailyURL}, resolved,
+		"mặc định phải giữ prod ưu tiên và daily làm fallback (không đảo thứ tự — #3611/#2962)")
+}
+
+func TestResolveAntigravityForwardBaseURLs_ExplicitDailySingle(t *testing.T) {
+	t.Setenv(antigravityForwardBaseURLEnv, "daily")
+
+	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
+	defer func() {
+		antigravity.BaseURLs = oldBaseURLs
+	}()
+
+	prodURL := "https://prod.test"
+	dailyURL := "https://daily.test"
+	antigravity.BaseURLs = []string{prodURL, dailyURL}
+
+	resolved := resolveAntigravityForwardBaseURLs()
+	require.Equal(t, []string{dailyURL}, resolved,
+		"env daily tường minh → chỉ dùng daily (giữ hành vi lịch sử)")
+}
+
+func TestResolveAntigravityForwardBaseURLs_EmptyNil(t *testing.T) {
+	t.Setenv(antigravityForwardBaseURLEnv, "")
+
+	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
+	defer func() {
+		antigravity.BaseURLs = oldBaseURLs
+	}()
+
+	antigravity.BaseURLs = nil
+	require.Nil(t, resolveAntigravityForwardBaseURLs())
 }
 
 func TestAntigravityAccountSwitchError_Error(t *testing.T) {

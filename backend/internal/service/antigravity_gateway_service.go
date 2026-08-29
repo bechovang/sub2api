@@ -119,10 +119,17 @@ func (e *PromptTooLongError) Error() string {
 	return fmt.Sprintf("prompt too long: status=%d", e.StatusCode)
 }
 
+// antigravityProjectRefresher 负责 404 self-heal 时重拉 project_id。
+// 独立 interface 以便单测注入 stub（tokenProvider 是 concrete type）。
+type antigravityProjectRefresher interface {
+	RefreshProjectID(ctx context.Context, account *Account) (string, error)
+}
+
 // AntigravityGatewayService 处理 Antigravity 平台的 API 转发
 type AntigravityGatewayService struct {
 	accountRepo       AccountRepository
 	tokenProvider     *AntigravityTokenProvider
+	projectRefresher  antigravityProjectRefresher
 	rateLimitService  *RateLimitService
 	httpUpstream      HTTPUpstream
 	settingService    *SettingService
@@ -160,6 +167,7 @@ func NewAntigravityGatewayService(
 	return &AntigravityGatewayService{
 		accountRepo:       accountRepo,
 		tokenProvider:     tokenProvider,
+		projectRefresher:  tokenProvider, // *AntigravityTokenProvider implement RefreshProjectID
 		rateLimitService:  rateLimitService,
 		httpUpstream:      httpUpstream,
 		settingService:    settingService,

@@ -222,9 +222,12 @@ GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily
 - **Mất biến này sau khi restart backend** → gateway quay về **prod** → account consumer quay lại
   `429` "Resource has been exhausted". **Phải ghi vào script/`.env` khởi động để auto-matic.**
 - Chỉ ảnh hưởng nhánh forward của Antigravity; các platform khác (openai/gemini/...) không đổi.
-- Vòng retry chỉ dùng **đúng 1 URL** đã resolve (`availableURLs := []string{baseURL}` trong
-  `antigravity_gateway_retry.go`) — **không tự fallback** prod → daily khi gặp 429. Admin
-  "Test connection" (platform `antigravity`) đi qua cùng retry loop nên **cũng respect env này**.
+- **✅ Đã patch (2026-08-29, `antigravity_gateway_retry.go`):** `resolveAntigravityForwardBaseURLs()`
+  giờ trả **`[prod, daily]`** khi không set env → retry loop **tự fallback prod → daily** khi
+  prod trả URL-level 429 (`Resource has been exhausted` không `RetryInfo`) hoặc connection error.
+  Env `GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL` **không còn bắt buộc** — `daily`/`sandbox` chỉ để
+  ép dùng đúng 1 endpoint. Prod vẫn ưu tiên nên token enterprise (prod 200) **không bao giờ**
+  chạm daily (không tái diễn #3611/#2962).
 - **Dấu hiệu nhận biết regression này** (đã tái diễn 2026-08-24 §2.4 và 2026-08-27, xem
   [`SESSION_LOG_2026-08-27.md`](SESSION_LOG_2026-08-27.md)):
   - **Tất cả** account Antigravity cùng lúc `429 RESOURCE_EXHAUSTED` **trống thông tin**
@@ -241,10 +244,14 @@ GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily
 > spawn server, cắt nhánh watchdog đó (giữ nguyên các process khác của nó), rồi mới tự
 > start kèm env. Chi tiết: [`SESSION_LOG_2026-08-29.md`](SESSION_LOG_2026-08-29.md) §2.2.
 >
-> ⚠️ **Bẫy BOM Windows:** file `.env` tạo trên Windows thường có BOM (`EF BB BF`) ở dòng
-> đầu; `source` trực tiếp sẽ lỗi `$'\357\273\277KEY=...': command not found` và **biến
-> đầu tiên không được set**. Lọc trước khi source:
-> `source <(sed -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' local-dev.env)`.
+>
+> 🛠️ **2 patch hardening kèm (2026-08-29):**
+> - **404 self-heal:** 404 body có `projects/<id>` (resourceName) → tự `RefreshProjectID`
+>   (LoadCodeAssist) + retry cùng account 1 lần/request, không failover/cooldown oan.
+>   404 không có project resource (model không tồn tại) → vẫn failover như cũ.
+> - **Ambiguous 429 ngắn:** `RESOURCE_EXHAUSTED` không `RetryInfo`/quota keyword → model
+>   rate limit **30s** cố định (không theo `antigravity_fallback_cooldown_minutes` cấu hình
+>   dài), tránh khóa oan account consumer vài chục phút.
 
 ---
 
