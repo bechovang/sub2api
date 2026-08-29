@@ -182,6 +182,14 @@ Thành công khi nhận sự kiện `test_complete` + `success:true`.
 > ⚠️ **Quan trọng:** test này chạy qua gateway thật; nếu gateway đang forward **prod** mà account
 > không đủ quyền thì sẽ ra `429` dù raw-call **daily** là `200`. Khi đã xác nhận daily chạy được,
 > phải bật env (mục §8) rồi mới test lại.
+>
+> ⚠️ **Model tồn tại khác nhau giữa prod/daily (phát hiện 2026-08-29):** một số model
+> chạy trên **prod** nhưng không có trên **daily** → trả `404 NOT_FOUND` ("Requested entity
+> was not found"). Đã gặp: `claude-sonnet-4-5`, `gemini-3.6-flash` (404 trên daily) trong
+> khi `gemini-2.5-flash` → `200`. **Không lấy kết quả `404` trên một model để kết luận acc
+> chết**; thử `gemini-2.5-flash` trước. Đồng thời kiểm tra model mà group/account đang bán
+> có tồn tại trên daily không — nếu không, map sang model khả dụng (`gemini-3.6-flash →
+> gemini-2.5-flash`) nếu không muốn client fail 404.**
 
 ### Gọi thực tế qua gateway `/v1/messages`
 Phải có: user **có balance**, api_key thuộc **group Antigravity** (group_id = id group), model
@@ -224,6 +232,19 @@ GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily
   - Token OAuth vẫn refresh bình thường (Google không thu hồi gì);
   - Log forward ghi `base_url=https://cloudcode-pa.googleapis.com` (prod).
   → Kiểm tra env của process trước khi nghi account/quota.
+
+> ⚠️ **Watchdog/process-manager bên ngoài (phát hiện 2026-08-29, tái diễn lần 3):** có
+> thể tồn tại một phiên agent/terminal khác tự restart `server.exe` khi nó tắt — và
+> restart đó **không kèm env daily** (chỉ set `DATA_DIR`). Triệu chứng: kill server để
+> restart kèm env, vài phút sau port 8080 lại bị chiếm bởi PID khác, log lại ghi prod.
+> **Trước khi restart: check `netstat -ano | findstr :8080` + process tree** xem ai đang
+> spawn server, cắt nhánh watchdog đó (giữ nguyên các process khác của nó), rồi mới tự
+> start kèm env. Chi tiết: [`SESSION_LOG_2026-08-29.md`](SESSION_LOG_2026-08-29.md) §2.2.
+>
+> ⚠️ **Bẫy BOM Windows:** file `.env` tạo trên Windows thường có BOM (`EF BB BF`) ở dòng
+> đầu; `source` trực tiếp sẽ lỗi `$'\357\273\277KEY=...': command not found` và **biến
+> đầu tiên không được set**. Lọc trước khi source:
+> `source <(sed -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' local-dev.env)`.
 
 ---
 
